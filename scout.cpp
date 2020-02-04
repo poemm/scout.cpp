@@ -222,113 +222,6 @@ ExecResult Account::exec(std::vector<uint8_t> &calldata){
     }
   );
 
-/*
-  hostModule->AppendFuncExport(
-    "bignum_f1m_add",
-    {{Type::I32, Type::I32, Type::I32}, {}},
-    [&]( const interp::HostFunc*, const interp::FuncSignature*, 
-                 const interp::TypedValues& args, interp::TypedValues& results) {
-      if(verbose) printf("called host func bignum_f1m_add\n");
-      uint32_t x = static_cast<uint32_t>(args[0].value.i32);
-      uint32_t y = static_cast<uint32_t>(args[1].value.i32);
-      uint32_t out = static_cast<uint32_t>(args[2].value.i32);
-      uint8_t* module_memory = (uint8_t*) this->module_memory->data.data();
-      uint64_t carry=0;
-      #pragma unroll
-      for (int i=0; i<256/64;i++){
-        uint64_t temp = x[i]+y[i]+carry;
-        carry = x[i]>=temp ? 1:0;
-        out[i]=temp;
-      }
-      return interp::ResultType::Ok;
-    }
-  );
-
-  hostModule->AppendFuncExport(
-    "bignum_f1m_sub",
-    {{Type::I32, Type::I32, Type::I32}, {}},
-    [&]( const interp::HostFunc*, const interp::FuncSignature*, 
-                 const interp::TypedValues& args, interp::TypedValues& results) {
-      if(verbose) printf("called host func bignum_f1m_add\n");
-      uint32_t x = static_cast<uint32_t>(args[0].value.i32);
-      uint32_t y = static_cast<uint32_t>(args[1].value.i32);
-      uint32_t out = static_cast<uint32_t>(args[2].value.i32);
-      uint8_t* module_memory = (uint8_t*) this->module_memory->data.data();
-      uint64_t carry=0;
-      #pragma unroll
-      for (int i=0; i<256/64;i++){
-        uint64_t temp = x[i]-carry;
-        out[i] = temp-y[i];
-        carry = (temp<y[i] || x[i]<carry) ? 1:0;
-      }
-      return interp::ResultType::Ok;
-    }
-  );
-
-  hostModule->AppendFuncExport(
-    "bignum_f1m_mul",
-    {{Type::I32, Type::I32, Type::I32}, {}},
-    [&]( const interp::HostFunc*, const interp::FuncSignature*, 
-                 const interp::TypedValues& args, interp::TypedValues& results) {
-      if(verbose) printf("called host func bignum_f1m_add\n");
-      uint32_t x = static_cast<uint32_t>(args[0].value.i32);
-      uint32_t y = static_cast<uint32_t>(args[1].value.i32);
-      uint32_t out = static_cast<uint32_t>(args[2].value.i32);
-      uint8_t* module_memory = (uint8_t*) this->module_memory->data.data();
-      uint64_t* w = out;
-      for (int i=0; i<2*256/64; i++)
-        w[i]=0;
-      for (int i=0; i<256/64; i++){
-        uint64_t c = 0;
-        for (int j=0; j<256/64; j++){
-          __uint128_t uv = (__uint128_t)w[i+j] + (__uint128_t)x[j]*y[i];
-          uv += c;
-          __uint128_t u = uv >> 64;
-          uint64_t v = uv;
-          w[i+j] = v;
-          c = u;
-        }
-        w[i+256/64] = c;
-      }
-      return interp::ResultType::Ok;
-    }
-  );
-
-
-  hostModule->AppendFuncExport(
-    "bignum_f1m_fromMontgomery",
-    {{Type::I32, Type::I32}, {}},
-    [&]( const interp::HostFunc*, const interp::FuncSignature*, 
-                 const interp::TypedValues& args, interp::TypedValues& results) {
-      if(verbose) printf("called host func bignum_f1m_add\n");
-      uint32_t x = static_cast<uint32_t>(args[0].value.i32);
-      uint32_t out = static_cast<uint32_t>(args[2].value.i32);
-      uint8_t* module_memory = (uint8_t*) this->module_memory->data.data();
-      uint64_t w[256/64*2];
-      for (int i=0; i< 2*256/64; i++)
-        w[i]=0;
-      for (int i=0; i<256/64; i++){
-        __uint128_t uv = (__uint128_t)w[2*i]+(__uint128_t)x[i]*x[i];
-        __uint128_t u = uv >> 64;
-        uint64_t v = uv;
-        w[2*i] = v;
-        __uint128_t c = u;
-        for (int j=i+1; j<256/64; j++){
-          uv = (__uint128_t)w[i+j]+2*(__uint128_t)x[j]*x[i]+c;
-          u = uv >> 64;
-          v = uv;
-          w[i+j] = v;
-          c = u;
-        }
-        w[i+256/64] = u;
-      }
-      for (int i=0; i< 2*256/64; i++)
-        out[i]=w[i];
-      return interp::ResultType::Ok;
-    }
-  );
-*/
-
   // instantiate this bytecode in this env
   DefinedModule* module = nullptr;
   Errors errors;
@@ -378,7 +271,7 @@ ExecResult Account::exec(std::vector<uint8_t> &calldata){
 
 
 
-int parse_scout_yaml(
+void parse_scout_yaml(
         std::string yaml_filename,
         std::vector<std::string> &filenames,
         std::vector< std::pair< uint32_t, std::vector<uint8_t> > > &shard_blocks, 

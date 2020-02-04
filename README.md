@@ -26,7 +26,7 @@ Option 1) CMake for everything.
 # make sure that dependencies are in this directory, otherwise adjust paths in CMakeLists.txt
 mkdir build && cd build
 cmake -DBUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release ..
-make	# this outputs scout.exec, and also builds wabt and yaml-cpp
+make    # this outputs scout.exec, and also builds wabt and yaml-cpp
 cp scout.exec ..
 cd ..
 ```
@@ -40,14 +40,14 @@ Option 2) g++ or clang++ for scout.cpp.
 cd yaml-cpp/
 mkdir build && cd build
 cmake ..
-make	 # will output libyaml-cpp.a
+make     # will output libyaml-cpp.a
 cd ../..
 
 # compile wabt
 cd wabt
 mkdir build && cd build
 cmake -DBUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release ..
-make	# will output library libwabt.a
+make     # will output library libwabt.a
 cd ../..
 
 # compile scout.cpp, adjust paths to includes and libraries as needed
@@ -60,6 +60,6 @@ g++ scout.cpp -Iwabt/ -Iwabt/build/ -Iyaml-cpp/include/ -Lwabt/build/ -Lyaml-cpp
 
 ```
 # from scout.cpp repo directory
-scout.exec helloworld.yaml
+./scout.exec helloworld.yaml
 # warning: yaml files specify path to wasm files relative to scout.exec, everything is in the same directory for now
 ```
