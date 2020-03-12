@@ -32,7 +32,7 @@
 #include "yaml-cpp/yaml.h"  // IWYU pragma: keep
 
 
-int verbose = 0;
+int verbose = 1;
 
 
 using namespace wabt;
@@ -52,6 +52,7 @@ using namespace wabt::interp;
 static std::map<std::array<uint8_t,32>, struct Account*> world_storage;
 
 
+static std::map< uint64_t, std::array<uint8_t,32> > shard_roots;
 
 
 
@@ -66,6 +67,8 @@ struct Account {
   std::array<uint8_t,32> address;
   std::vector<uint8_t> bytecode;	  // shouldn't change, can point to code in another Account
   std::vector<uint8_t> state_root;
+
+  uint64_t shard_id;
 
   // these are accessed by host function during execution
   std::vector<uint8_t>* calldata;	  // this is set when this module is called, and made null after the call returns
@@ -206,6 +209,29 @@ ExecResult Account::exec(std::vector<uint8_t> &calldata){
   );
 
   hostModule->AppendFuncExport(
+    "eth2_getShardId",
+    {{}, {Type::I64}},
+    [&]( const interp::HostFunc*, const interp::FuncSignature*, 
+                 const interp::TypedValues& args, interp::TypedValues& results) {
+      if(verbose) printf("called host func getShardId\n");
+      results[0].set_i64(this->shard_id);
+      return interp::ResultType::Ok;
+    }
+  );
+
+  hostModule->AppendFuncExport(
+    "eth2_getShardStateRoot",
+    {{Type::I64, Type::I32}, {}},
+    [&]( const interp::HostFunc*, const interp::FuncSignature*, 
+                 const interp::TypedValues& args, interp::TypedValues& results) {
+      uint32_t shard_id = static_cast<uint32_t>(args[0].value.i64);
+      uint32_t offset = static_cast<uint32_t>(args[1].value.i32);
+      if(verbose) printf("called host func getShardStateRoot %u %u\n", shard_id, offset);
+      return interp::ResultType::Ok;
+    }
+  );
+
+  hostModule->AppendFuncExport(
     "eth2_debugPrintMem",
     {{Type::I32, Type::I32}, {}},
     [&]( const interp::HostFunc*, const interp::FuncSignature*, 
@@ -269,75 +295,136 @@ ExecResult Account::exec(std::vector<uint8_t> &calldata){
 
 
 
+struct envstate {
+  std::vector<uint8_t> envid;	
+  uint64_t shardid;
+  std::string code;
+  std::vector<uint8_t> stateroot;	
+};
 
+struct timeslot {
+  uint64_t time;
+  std::vector< std::pair<std::vector<uint8_t>, std::vector<uint8_t> > > envid_and_inputdata;	
+};
 
 void parse_scout_yaml(
         std::string yaml_filename,
-        std::vector<std::string> &filenames,
-        std::vector< std::pair< uint32_t, std::vector<uint8_t> > > &shard_blocks, 
-	std::vector< std::vector<uint8_t> > &prestates, 
-        std::vector< std::vector<uint8_t> > &poststates){
+	std::vector< struct envstate > &prestates, 
+        std::vector< timeslot > &timeslots, 
+	std::vector< struct envstate > &poststates
+	){
 
-  // parse yaml file
+  // read yaml file
   YAML::Node yaml = YAML::LoadFile(yaml_filename);
   if (verbose) std::cout << yaml;
 
-  // get filenames
-  YAML::Node yaml_execution_scripts = yaml["beacon_state"]["execution_scripts"];
-  for (std::size_t i=0;i<yaml_execution_scripts.size();i++) {
-    filenames.push_back(yaml_execution_scripts[i].as<std::string>());
-  }
-  if (verbose){ printf("\nfilenames:\n"); for (std::size_t i=0;i<filenames.size();i++) { std::cout<<filenames[i]<<std::endl; } }
-
   // get prestates
-  YAML::Node yaml_prestates = yaml["shard_pre_state"]["exec_env_states"];
-  std::vector<std::string> prestates_hexstr;
+  YAML::Node yaml_prestates = yaml["prestates"];
   for (std::size_t i=0;i<yaml_prestates.size();i++) {
-    prestates_hexstr.push_back(yaml_prestates[i].as<std::string>());
-    prestates.push_back(std::vector<uint8_t>());
-    for (int j = 0 ; j < prestates_hexstr[i].size() ; j+=2) {
-      prestates[i].push_back(::strtol( prestates_hexstr[i].substr( j, 2 ).c_str(), 0, 16 ));
+    prestates.emplace_back();
+    // get envid
+    std::string envid_hexstr = yaml_prestates[i]["envid"].as<std::string>();
+    for (int j = 0 ; j < envid_hexstr.size() ; j+=2) 
+      prestates.back().envid.push_back(::strtol( envid_hexstr.substr( j, 2 ).c_str(), 0, 16 ) );
+    // get shardid
+    prestates.back().shardid = yaml_prestates[i]["shardid"].as<uint64_t>();
+    // get code filename
+    prestates.back().code = yaml_prestates[i]["code"].as<std::string>();
+    // get stateroot
+    std::string stateroot_hexstr = yaml_prestates[i]["stateroot"].as<std::string>();
+    for (int j = 0 ; j < stateroot_hexstr.size() ; j+=2) 
+      prestates.back().stateroot.push_back(::strtol( stateroot_hexstr.substr( j, 2 ).c_str(), 0, 16 )) ;
+  }
+  if (verbose){ 
+    printf("\nprestates:\n");
+    for (int i=0; i<prestates.size(); i++){
+      printf("\n  - envid:");
+      for (std::size_t j=0;j<prestates[i].envid.size();j++) 
+        printf("%i ",prestates[i].envid[j]);
+      printf("\n    shardid: %lu", prestates[i].shardid);
+      printf("\n    code filename: %s", prestates[i].code.c_str());
+      printf("\n    stateroot:");
+      for (std::size_t j=0;j<prestates[i].stateroot.size();j++) 
+        printf("%2i ",prestates[i].stateroot[j]);
     }
   }
-  if (verbose){ printf("\nprestates:\n"); for (std::size_t i=0;i<prestates_hexstr.size();i++) { std::cout<<prestates_hexstr[i]<<std::endl; } }
 
-  // get shard blocks
-  YAML::Node yaml_shard_blocks = yaml["shard_blocks"];
-  std::vector<std::string> calldatas_str;
-  for (std::size_t i=0;i<yaml_shard_blocks.size();i++) {
-    YAML::Node env = yaml_shard_blocks[i]["env"];
-    YAML::Node calldata_yaml = yaml_shard_blocks[i]["data"];
-    std::vector<uint8_t> calldata;
-    calldatas_str.push_back(calldata_yaml.as<std::string>());
-    for (int j = 0 ; j < calldatas_str[i].size() ; j+=2) {
-      calldata.push_back(::strtol( calldatas_str[i].substr( j, 2 ).c_str(), 0, 16 ));
+  // get timeslots
+  /*
+ - 50:
+   - envid: 0xabcdabcd
+     inputdata: 0x0001
+   - envid: 0x10010010
+     inputdata: 0xffffff
+ - 51:
+   - envid: 0xabcdabcd
+     inputdata: 0x77ffff
+  */
+  /*
+  YAML::Node yaml_timeslots = yaml["timeslots"];
+  for (std::size_t i=0;i<yaml_timeslots.size();i++) {
+    timeslots.emplace_back();
+    timeslots.back().time = yaml_timeslots[i].as<uint64_t>();
+    for (std::size_t j=0;j<yaml_timeslots.size();i++) {
+      timeslots.back().envid_and_inputdata.emplace_back();
+
+      // get envid
+      std::string envid_hexstr = yaml_prestates[i]["envid"].as<std::string>();
+      for (int k = 0 ; k < envid_hexstr.size() ; k+=2) 
+        timeslots.back().envid_and_inputdata.back().first.push_back(::strtol( envid_hexstr.substr( k, 2 ).c_str(), 0, 16 ) );
+
+      // get inputdata
+      std::string inputdata_hexstr = yaml_prestates[i]["inputdata"].as<std::string>();
+      for (int k = 0 ; k < inputdata_hexstr.size() ; k+=2) 
+        timeslots.back().envid_and_inputdata.back().second.push_back(::strtol( inputdata_hexstr.substr( k, 2 ).c_str(), 0, 16 ) );
+
     }
-    shard_blocks.push_back(std::make_pair(env.as<uint32_t>(),calldata));
   }
-  if (verbose){
-    printf("\nblocks:\n"); 
-    for (int i=0;i<shard_blocks.size();i++) {
-      std::cout<<shard_blocks[i].first<<": ";
-      for (int j=0;j<shard_blocks[i].second.size();j++) {
-        //std::cout<<" "<<shard_blocks[i].second[j]<<std::endl; 
-        printf(" %u",shard_blocks[i].second[j]); 
+  if (verbose){ 
+    printf("\ntimeslots:\n");
+    for (int i=0; i<timeslots.size(); i++){
+      printf("\n   - %lu:",timeslots[i].time);
+      for (int j=0; j<timeslots[i].endid_and_inputdata.size(); j++){
+        printf("\n      envid: ", timeslots[i].endid_and_inputdata[j].envid);
+        for (std::size_t k=0;k<timeslots[i].endid_and_inputdata[j].first.size();k++) 
+          printf("%2i ",timeslots[i].endid_and_inputdata[j].first[k]);
+        printf("\n      inputdata: ", timeslots[i].endid_and_inputdata[j].envid);
+        for (std::size_t k=0;k<timeslots[i].endid_and_inputdata[j].second.size();k++) 
+          printf("%2i ",timeslots[i].endid_and_inputdata[j].second[k]);
       }
-      printf("\n"); 
     }
   }
+  */
 
   // get poststates
-  YAML::Node yaml_poststates = yaml["shard_post_state"]["exec_env_states"];
-  std::vector<std::string> poststates_hexstr;
-  poststates.reserve(filenames.size());
+  YAML::Node yaml_poststates = yaml["poststates"];
   for (std::size_t i=0;i<yaml_poststates.size();i++) {
-    poststates_hexstr.push_back(yaml_poststates[i].as<std::string>());
-    poststates.push_back(std::vector<uint8_t>());
-    for (int j = 0 ; j < poststates_hexstr[i].size() ; j+=2) {
-      poststates[i].push_back(::strtol( poststates_hexstr[i].substr( j, 2 ).c_str(), 0, 16 ));
+    poststates.emplace_back();
+    // get envid
+    std::string envid_hexstr = yaml_poststates[i]["envid"].as<std::string>();
+    for (int j = 0 ; j < envid_hexstr.size() ; j+=2) 
+      poststates.back().envid.push_back(::strtol( envid_hexstr.substr( j, 2 ).c_str(), 0, 16 ) );
+    // get shardid
+    poststates.back().shardid = yaml_poststates[i]["shardid"].as<uint64_t>();
+    // get code filename
+    poststates.back().code = yaml_poststates[i]["code"].as<std::string>();
+    // get stateroot
+    std::string stateroot_hexstr = yaml_poststates[i]["stateroot"].as<std::string>();
+    for (int j = 0 ; j < stateroot_hexstr.size() ; j+=2) 
+      poststates.back().stateroot.push_back(::strtol( stateroot_hexstr.substr( j, 2 ).c_str(), 0, 16 )) ;
+  }
+  if (verbose){ 
+    printf("\npoststates:\n");
+    for (int i=0; i<poststates.size(); i++){
+      printf("\n  - envid:");
+      for (std::size_t j=0;j<poststates[i].envid.size();j++) 
+        printf("%i ",poststates[i].envid[j]);
+      printf("\n    shardid: %lu", poststates[i].shardid);
+      printf("\n    stateroot:");
+      for (std::size_t j=0;j<poststates[i].stateroot.size();j++) 
+        printf("%2i ",poststates[i].stateroot[j]);
     }
   }
-  if (verbose){ printf("\npoststates:\n"); for (std::size_t i=0;i<poststates_hexstr.size();i++) { std::cout<<poststates_hexstr[i]<<std::endl; } }
 
 }
 
@@ -389,15 +476,17 @@ int main(int argc, char** argv) {
     return -1;
   }
 
-  // parse scout-formatted yaml file to get wasm filenames, prestates, calldatas, and poststates
-  std::vector<std::string> filenames;
-  std::vector< std::pair< uint32_t, std::vector<uint8_t> > > shard_blocks; 
-  std::vector< std::vector<uint8_t> > prestates;
-  std::vector< std::vector<uint8_t> > poststates;
-  parse_scout_yaml(args[1], filenames, shard_blocks, prestates, poststates);
+  // parse scout-formatted yaml file to get prestates, timeslots, poststates
+  std::string yaml_filename;
+  std::vector< struct envstate > prestates;
+  std::vector< timeslot > timeslots;
+  std::vector< struct envstate > poststates;
 
-  if(verbose) print_files_prestates_blocks_poststates(filenames, shard_blocks, prestates, poststates);
+  parse_scout_yaml(args[1], prestates, timeslots, poststates);
 
+  //if(verbose) print_files_prestates_blocks_poststates(filenames, shard_blocks, prestates, poststates);
+
+  /*
   if(filenames.size() != prestates.size() || prestates.size() != poststates.size())
     printf("ERROR: different numbers of files, prestates, or poststates\n");
 
@@ -456,6 +545,7 @@ int main(int argc, char** argv) {
   // clean up
   for (auto acct: world_storage)
     delete world_storage[acct.first];
+    */
 
   return 0;
 }
