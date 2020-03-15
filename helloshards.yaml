@@ -1,25 +1,22 @@
 prestates: # list of envs (envid, shardid, wasm filename, pre_state)
- - envid: 0xabcdabcd
-   shardid: 0
-   code: helloshards.wasm
-   stateroot: 0x00000000
- - envid: 0x10010010
+ - envid: 0x1000000000000000000000000000000000000000000000000000000000000000
    shardid: 1
    code: helloshards.wasm
-   stateroot: 0xffffffff
+   stateroot: 0x0000000000000000000000000000000000000000000000000000000000000000
+ - envid: 0x2000000000000000000000000000000000000000000000000000000000000000
+   shardid: 2
+   code: helloshards.wasm
+   stateroot: 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
 timeslots: # list of time slots each with a list of shard_blocks (envid, calldata)
- - 50:
-   - envid: 0xabcdabcd
-     inputdata: 0x01
-   - envid: 0x10010010
-     inputdata: 0x00
- - 51:
-   - envid: 0xabcdabcd
-     inputdata: 0x00
+ - slot:
+   - envid: 0x1000000000000000000000000000000000000000000000000000000000000000
+     inputdata: 0x0200000000000000000000000000000000000000000000000000000000000000
+   - envid: 0x2000000000000000000000000000000000000000000000000000000000000000
+     inputdata: 0x0100000000000000000000000000000000000000000000000000000000000000
 poststates: # list of envs (envid, shardid, post_state)
- - envid: 0xabcdabcd
+ - envid: 0x1000000000000000000000000000000000000000000000000000000000000000
    shardid: 0
-   stateroot: 0xffffffff
- - envid: 0x10010010
+   stateroot: 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ - envid: 0x2000000000000000000000000000000000000000000000000000000000000000
    shardid: 1
-   stateroot: 0x00000000
+   stateroot: 0x0000000000000000000000000000000000000000000000000000000000000000

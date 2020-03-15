@@ -32,7 +32,7 @@
 #include "yaml-cpp/yaml.h"  // IWYU pragma: keep
 
 
-int verbose = 1;
+int verbose = 0;
 
 
 using namespace wabt;
@@ -50,10 +50,6 @@ using namespace wabt::interp;
 // perhaps this will eventually become a merklized structure which can be handled by a database
 
 static std::map<std::array<uint8_t,32>, struct Account*> world_storage;
-
-
-static std::map< uint64_t, std::array<uint8_t,32> > shard_roots;
-
 
 
 
@@ -75,16 +71,26 @@ struct Account {
   interp::Memory* module_memory = nullptr;// memory of the module, used for copying calldata etc, problem with recursive calls
 
   // constructor
-  Account(std::array<uint8_t,32> address, std::vector<uint8_t> &bytecode, std::vector<uint8_t> &state_root);
+  Account(std::array<uint8_t,32> address, uint64_t shardid, std::vector<uint8_t> &bytecode, std::vector<uint8_t> &stateroot);
 
   // execute this bytecode
   ExecResult exec(std::vector<uint8_t> &calldata);
 };
 
 
+//////////
+// shards are stored as an array of sets of accounts
+static const int num_shards = 64;
+struct Shard {
+  uint32_t id;
+  std::set<struct Account*> accounts;
+  std::array<uint8_t,32> stateroot;
+};
+static std::array<struct Shard,num_shards> shards;
+
 
 // constructor
-Account::Account(std::array<uint8_t,32> address, std::vector<uint8_t> &bytecode, std::vector<uint8_t> &state_root) {
+Account::Account(std::array<uint8_t,32> address, uint64_t shardid, std::vector<uint8_t> &bytecode, std::vector<uint8_t> &stateroot) {
   //if (verbose) printf("Accout::Account()\n");
 
   // get address
@@ -96,8 +102,24 @@ Account::Account(std::array<uint8_t,32> address, std::vector<uint8_t> &bytecode,
     this->bytecode.push_back(bytecode.data()[i]);
   }
 
+  this->shard_id = shardid;
+  if (num_shards > this->shard_id){
+    // if not already there, insert it
+    std::set<Account*>::iterator it1 = shards[this->shard_id].accounts.find(this);
+    std::set<Account*>::iterator it2 = shards[this->shard_id].accounts.end();
+    if ( it1 == it2 ){
+      shards[this->shard_id].accounts.insert(this);
+      shards[this->shard_id].id = this->shard_id;
+      if (verbose) printf("adding shard %lu\n",shard_id);
+    } else {
+      printf("ERROR: this envid is already present in this shard\n");
+    }
+  }
+  else
+    printf("ERROR: num_shards < this->shard_id %u %lu\n",num_shards, this->shard_id);
+
   for(int i=0;i<32;i++){
-    this->state_root.push_back(state_root.data()[i]);
+    this->state_root.push_back(stateroot.data()[i]);
   }
 }
 
@@ -145,8 +167,8 @@ ExecResult Account::exec(std::vector<uint8_t> &calldata){
     {{}, {Type::I32}},
     [&]( const interp::HostFunc*, const interp::FuncSignature*, 
                  const interp::TypedValues& args, interp::TypedValues& results ) {
-      if(verbose) printf("called host func blockDataSize\n");
-      if(verbose) printf("calldata size is %lu\n",this->calldata->size());
+      if(verbose) printf("called host func blockDataSize %lu\n",this->calldata->size());
+      //if(verbose) printf("calldata size is %lu\n",this->calldata->size());
       results[0].set_i32(this->calldata->size());
       return interp::ResultType::Ok;
     }
@@ -182,7 +204,6 @@ ExecResult Account::exec(std::vector<uint8_t> &calldata){
       uint32_t offset = static_cast<uint32_t>(args[0].value.i32);
       if(verbose) printf("called host func savePostStateRoot %u\n",offset);
       // TODO: check if within bounds of memory
-      //uint8_t* host_memory = (uint8_t*) this->state_root;//host_memory->data.data();
       uint8_t* state_root = this->state_root.data();//host_memory->data.data();
       uint8_t* module_memory = (uint8_t*) this->module_memory->data.data();
       //memcpy(state_root, module_memory+offset, 32);
@@ -213,7 +234,7 @@ ExecResult Account::exec(std::vector<uint8_t> &calldata){
     {{}, {Type::I64}},
     [&]( const interp::HostFunc*, const interp::FuncSignature*, 
                  const interp::TypedValues& args, interp::TypedValues& results) {
-      if(verbose) printf("called host func getShardId\n");
+      if(verbose) printf("called host func getShardId %lu\n",this->shard_id);
       results[0].set_i64(this->shard_id);
       return interp::ResultType::Ok;
     }
@@ -221,12 +242,26 @@ ExecResult Account::exec(std::vector<uint8_t> &calldata){
 
   hostModule->AppendFuncExport(
     "eth2_getShardStateRoot",
-    {{Type::I64, Type::I32}, {}},
+    {{Type::I64, Type::I32}, {Type::I32}},
     [&]( const interp::HostFunc*, const interp::FuncSignature*, 
                  const interp::TypedValues& args, interp::TypedValues& results) {
       uint32_t shard_id = static_cast<uint32_t>(args[0].value.i64);
       uint32_t offset = static_cast<uint32_t>(args[1].value.i32);
       if(verbose) printf("called host func getShardStateRoot %u %u\n", shard_id, offset);
+      uint8_t* module_memory = (uint8_t*) this->module_memory->data.data();
+      if (shards[shard_id].accounts.size()==1 && shard_id<num_shards){
+        // TODO: check if within bounds of memory
+        for(int i=0;i<32;i++){
+   	  if(verbose) printf("%u %u  ", module_memory[offset+i],shards[shard_id].stateroot[i]);
+          //module_memory[offset+i] = (*(shards[shard_id].accounts.begin()))->state_root[i];
+          module_memory[offset+i] = shards[shard_id].stateroot[i];
+        }
+        results[0].set_i32(0);
+      }
+      else {
+        printf("ERROR: shard_id is out of range, or this shard has zero or multiple envs which is not defined yet. %u %lu\n",shard_id, shards[shard_id].accounts.size());
+        results[0].set_i32(1);
+      }
       return interp::ResultType::Ok;
     }
   );
@@ -294,17 +329,21 @@ ExecResult Account::exec(std::vector<uint8_t> &calldata){
 
 
 
+/////////////
+// YAML STUFF
+// maybe this should be in a .h file
 
 struct envstate {
-  std::vector<uint8_t> envid;	
+  std::array<uint8_t,32> envid;	
   uint64_t shardid;
-  std::string code;
+  std::string wasmfilename;
   std::vector<uint8_t> stateroot;	
 };
 
 struct timeslot {
   uint64_t time;
-  std::vector< std::pair<std::vector<uint8_t>, std::vector<uint8_t> > > envid_and_inputdata;	
+  std::vector< std::array<uint8_t,32> > envid;	
+  std::vector< std::vector<uint8_t> > inputdata;	
 };
 
 void parse_scout_yaml(
@@ -324,77 +363,42 @@ void parse_scout_yaml(
     prestates.emplace_back();
     // get envid
     std::string envid_hexstr = yaml_prestates[i]["envid"].as<std::string>();
-    for (int j = 0 ; j < envid_hexstr.size() ; j+=2) 
-      prestates.back().envid.push_back(::strtol( envid_hexstr.substr( j, 2 ).c_str(), 0, 16 ) );
+    for (int j = 2 ; j < envid_hexstr.size() ; j+=2) {
+      prestates.back().envid[(j-2)/2] = ::strtol( envid_hexstr.substr( j, 2 ).c_str(), 0, 16 ) ;
+    }
     // get shardid
     prestates.back().shardid = yaml_prestates[i]["shardid"].as<uint64_t>();
     // get code filename
-    prestates.back().code = yaml_prestates[i]["code"].as<std::string>();
+    prestates.back().wasmfilename = yaml_prestates[i]["code"].as<std::string>();
     // get stateroot
     std::string stateroot_hexstr = yaml_prestates[i]["stateroot"].as<std::string>();
-    for (int j = 0 ; j < stateroot_hexstr.size() ; j+=2) 
+    for (int j = 2 ; j < stateroot_hexstr.size() ; j+=2) 
       prestates.back().stateroot.push_back(::strtol( stateroot_hexstr.substr( j, 2 ).c_str(), 0, 16 )) ;
-  }
-  if (verbose){ 
-    printf("\nprestates:\n");
-    for (int i=0; i<prestates.size(); i++){
-      printf("\n  - envid:");
-      for (std::size_t j=0;j<prestates[i].envid.size();j++) 
-        printf("%i ",prestates[i].envid[j]);
-      printf("\n    shardid: %lu", prestates[i].shardid);
-      printf("\n    code filename: %s", prestates[i].code.c_str());
-      printf("\n    stateroot:");
-      for (std::size_t j=0;j<prestates[i].stateroot.size();j++) 
-        printf("%2i ",prestates[i].stateroot[j]);
-    }
   }
 
   // get timeslots
-  /*
- - 50:
-   - envid: 0xabcdabcd
-     inputdata: 0x0001
-   - envid: 0x10010010
-     inputdata: 0xffffff
- - 51:
-   - envid: 0xabcdabcd
-     inputdata: 0x77ffff
-  */
-  /*
   YAML::Node yaml_timeslots = yaml["timeslots"];
   for (std::size_t i=0;i<yaml_timeslots.size();i++) {
     timeslots.emplace_back();
-    timeslots.back().time = yaml_timeslots[i].as<uint64_t>();
-    for (std::size_t j=0;j<yaml_timeslots.size();i++) {
-      timeslots.back().envid_and_inputdata.emplace_back();
-
+    timeslots.back().time = i; //yaml_timeslots[i].as<uint64_t>();
+    for (std::size_t j=0; j<yaml_timeslots[i]["slot"].size(); j++) {
+      timeslots.back().envid.emplace_back();
       // get envid
-      std::string envid_hexstr = yaml_prestates[i]["envid"].as<std::string>();
-      for (int k = 0 ; k < envid_hexstr.size() ; k+=2) 
-        timeslots.back().envid_and_inputdata.back().first.push_back(::strtol( envid_hexstr.substr( k, 2 ).c_str(), 0, 16 ) );
-
-      // get inputdata
-      std::string inputdata_hexstr = yaml_prestates[i]["inputdata"].as<std::string>();
-      for (int k = 0 ; k < inputdata_hexstr.size() ; k+=2) 
-        timeslots.back().envid_and_inputdata.back().second.push_back(::strtol( inputdata_hexstr.substr( k, 2 ).c_str(), 0, 16 ) );
-
-    }
-  }
-  if (verbose){ 
-    printf("\ntimeslots:\n");
-    for (int i=0; i<timeslots.size(); i++){
-      printf("\n   - %lu:",timeslots[i].time);
-      for (int j=0; j<timeslots[i].endid_and_inputdata.size(); j++){
-        printf("\n      envid: ", timeslots[i].endid_and_inputdata[j].envid);
-        for (std::size_t k=0;k<timeslots[i].endid_and_inputdata[j].first.size();k++) 
-          printf("%2i ",timeslots[i].endid_and_inputdata[j].first[k]);
-        printf("\n      inputdata: ", timeslots[i].endid_and_inputdata[j].envid);
-        for (std::size_t k=0;k<timeslots[i].endid_and_inputdata[j].second.size();k++) 
-          printf("%2i ",timeslots[i].endid_and_inputdata[j].second[k]);
+      std::string envid_hexstr = yaml_timeslots[i]["slot"][j]["envid"].as<std::string>();
+      for (int k = 2 ; k < envid_hexstr.size() ; k+=2) {
+        timeslots.back().envid.back()[(k-2)/2] = ::strtol( envid_hexstr.substr( k, 2 ).c_str(), 0, 16 ) ;
       }
+      // get inputdata
+      timeslots.back().inputdata.emplace_back();
+      std::string inputdata_hexstr = yaml_timeslots[i]["slot"][j]["inputdata"].as<std::string>();
+      if(verbose) printf("inputdata %s\n",inputdata_hexstr.c_str());
+      for (int k = 2 ; k < inputdata_hexstr.size() ; k+=2) {
+        uint8_t tmp = ::strtol( inputdata_hexstr.substr( k, 2 ).c_str(), 0, 16 );
+        timeslots.back().inputdata.back().push_back( tmp );
+      }
+
     }
   }
-  */
 
   // get poststates
   YAML::Node yaml_poststates = yaml["poststates"];
@@ -402,69 +406,71 @@ void parse_scout_yaml(
     poststates.emplace_back();
     // get envid
     std::string envid_hexstr = yaml_poststates[i]["envid"].as<std::string>();
-    for (int j = 0 ; j < envid_hexstr.size() ; j+=2) 
-      poststates.back().envid.push_back(::strtol( envid_hexstr.substr( j, 2 ).c_str(), 0, 16 ) );
+    for (int j = 2 ; j < envid_hexstr.size() ; j+=2) 
+      poststates.back().envid[(j-2)/2] = ::strtol( envid_hexstr.substr( j, 2 ).c_str(), 0, 16 ) ;
     // get shardid
     poststates.back().shardid = yaml_poststates[i]["shardid"].as<uint64_t>();
-    // get code filename
-    poststates.back().code = yaml_poststates[i]["code"].as<std::string>();
     // get stateroot
     std::string stateroot_hexstr = yaml_poststates[i]["stateroot"].as<std::string>();
-    for (int j = 0 ; j < stateroot_hexstr.size() ; j+=2) 
+    for (int j = 2 ; j < stateroot_hexstr.size() ; j+=2) 
       poststates.back().stateroot.push_back(::strtol( stateroot_hexstr.substr( j, 2 ).c_str(), 0, 16 )) ;
   }
-  if (verbose){ 
-    printf("\npoststates:\n");
-    for (int i=0; i<poststates.size(); i++){
-      printf("\n  - envid:");
-      for (std::size_t j=0;j<poststates[i].envid.size();j++) 
-        printf("%i ",poststates[i].envid[j]);
-      printf("\n    shardid: %lu", poststates[i].shardid);
-      printf("\n    stateroot:");
-      for (std::size_t j=0;j<poststates[i].stateroot.size();j++) 
-        printf("%2i ",poststates[i].stateroot[j]);
+
+}
+
+
+void print_parsed_yaml(
+        std::vector< struct envstate > &prestates,
+        std::vector< timeslot > &timeslots,
+        std::vector< struct envstate > &poststates) {
+  std::cout<<"\n\nprint_files_prestates_blocks_poststates()"<<std::endl;
+
+  std::cout<<"\nprestates: #len prestates "<<prestates.size()<<std::endl;
+  for (int i=0; i<prestates.size(); i++){
+    printf(" - envid: ");
+    for (std::size_t j=0;j<prestates[i].envid.size();j++) 
+      printf("%i ",prestates[i].envid[j]);
+    printf("\n");
+    printf("   shardid: %lu\n", prestates[i].shardid);
+    printf("   code filename: %s\n", prestates[i].wasmfilename.c_str());
+    printf("   stateroot: ");
+    for (std::size_t j=0;j<prestates[i].stateroot.size();j++) 
+      printf("%i ",prestates[i].stateroot[j]);
+    printf("\n");
+  }
+
+  std::cout<<"timeslots: #len timeslotss "<<timeslots.size()<<std::endl;
+  for (int i=0; i<timeslots.size(); i++){
+    printf(" - slot:\n");
+    for (int j=0; j<timeslots[i].envid.size(); j++){
+      printf("  - envid: ");
+      for (std::size_t k=0;k<timeslots[i].envid[j].size();k++) 
+        printf("%2i ",timeslots[i].envid[j][k]);
+      printf("\n");
+      printf("    inputdata: ");
+      for (std::size_t k=0;k<timeslots[i].inputdata[j].size();k++) 
+        printf("%2i ",timeslots[i].inputdata[j][k]);
+      printf("\n");
     }
   }
 
+  std::cout<<"poststates: #len poststates "<<poststates.size()<<std::endl;
+  for (int i=0; i<poststates.size(); i++){
+    printf(" - envid: ");
+    for (std::size_t j=0;j<poststates[i].envid.size();j++) 
+      printf("%i ",poststates[i].envid[j]);
+    printf("\n");
+    printf("   shardid: %lu\n", poststates[i].shardid);
+    printf("   stateroot: ");
+    for (std::size_t j=0;j<poststates[i].stateroot.size();j++) 
+      printf("%2i ",poststates[i].stateroot[j]);
+    printf("\n");
+  }
 }
 
 
-void print_files_prestates_blocks_poststates(
-        std::vector<std::string> &filenames,
-        std::vector< std::pair< uint32_t, std::vector<uint8_t> > > &shard_blocks, 
-	std::vector< std::vector<uint8_t> > &prestates, 
-        std::vector< std::vector<uint8_t> > &poststates){
-  std::cout<<"\n\nprint_files_prestates_blocks_poststates()"<<std::endl;
 
-  std::cout<<"\nfilenames:"<<std::endl;
-  for (auto filename : filenames)
-    std::cout<<filename<<std::endl;
-    
-  std::cout<<"\nprestates:"<<std::endl;
-  printf("len prestates %lu\n",prestates.size());
-  for (auto prestate : prestates){
-    printf("len prestate %lu\n",prestate.size());
-    for (auto s : prestate)
-      printf("%u ",s);
-    std::cout<<std::endl;
-  }
 
-  std::cout<<"\nshard_blocks:"<<std::endl;
-  for (auto shard_block : shard_blocks){
-    std::cout<<shard_block.first<<":  ";
-    for (auto s : shard_block.second)
-      printf("%u ",s);
-    std::cout<<std::endl;
-  }
-
-  std::cout<<"\npoststates:"<<std::endl;
-  for (auto poststate : poststates){
-    for (auto s : poststate)
-      printf("%u ",s);
-    std::cout<<std::endl;
-  }
-  std::cout<<std::endl;
-}
 
 
 int main(int argc, char** argv) {
@@ -472,7 +478,7 @@ int main(int argc, char** argv) {
   //get all command-line args
   std::vector<std::string> args(argv, argv + argc);
   if (args.size()<2){
-    printf("usage: ./scout.exec helloworld.yaml\n");
+    printf("usage: ./scout.exec helloshards.yaml\n");
     return -1;
   }
 
@@ -484,68 +490,69 @@ int main(int argc, char** argv) {
 
   parse_scout_yaml(args[1], prestates, timeslots, poststates);
 
-  //if(verbose) print_files_prestates_blocks_poststates(filenames, shard_blocks, prestates, poststates);
+  if(verbose) print_parsed_yaml(prestates, timeslots, poststates);
 
-  /*
-  if(filenames.size() != prestates.size() || prestates.size() != poststates.size())
-    printf("ERROR: different numbers of files, prestates, or poststates\n");
-
-  // get bytecode from each wasm file
-  std::vector< std::vector<uint8_t> > bytecodes;
-  for (int i=0; i<filenames.size(); i++){
-    //if (verbose) std::cout<<"reading wasm file "<<filenames[i].c_str()<<std::endl;
-    std::ifstream stream(filenames[i].c_str(), std::ios::in | std::ios::binary);
-    bytecodes.push_back(std::vector<uint8_t>((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>()));
+  // initialize from prestates
+  for (int i=0; i<prestates.size(); i++){
+    // instantiate
+    std::ifstream stream(prestates[i].wasmfilename.c_str(), std::ios::in | std::ios::binary);
+    std::vector<uint8_t> bytecode = std::vector<uint8_t>((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    Account* account = new Account(prestates[i].envid, prestates[i].shardid, bytecode, prestates[i].stateroot);
+    // register it globally
+    world_storage[prestates[i].envid]=account;
   }
 
-  // create each account with address, fill bytecode and prestate
-  for (int i=0; i<filenames.size(); i++){
-    std::array<uint8_t,32> address;
-    for (int j=0; j<32; j++)
-      address[j] = 0;
-    *((uint32_t*)address.data())=i; // address is index for now
-    // instantiate
-    Account* account = new Account(address, bytecodes[i], prestates[i]);
-    // register it globally
-    world_storage[address]=account;
+  // initialize shard states
+  for (int i=0; i<num_shards; i++){
+    // only works if shard has one env for now
+    if (shards[i].accounts.size()==1){
+      for (int j=0; j<32; j++)
+       shards[i].stateroot[j] = (*(shards[i].accounts.begin()))->state_root[i];
+    }
   }
 
   // execute each call
-  for (int i=0; i<shard_blocks.size(); i++){
-    std::array<uint8_t,32> address;
-    for (int j=0; j<32; j++)
-      address[j] = 0;
-    *((uint32_t*)address.data())=shard_blocks[i].first; // address is index for now
-    Account* account = world_storage[address];
-    account->exec( shard_blocks[i].second );
+  for (int i=0; i<timeslots.size(); i++){
+    for (int j=0; j<timeslots[i].envid.size(); j++){
+      Account* account = world_storage[timeslots[i].envid[j]];
+      account->exec( timeslots[i].inputdata[j] );
+    }
+    // update each shard state root, same as initializing shard state roots above
+    for (int i=0; i<num_shards; i++){
+      // only works if shard has one env for now
+      if (shards[i].accounts.size()==1){
+        for (int j=0; j<32; j++)
+         shards[i].stateroot[j] = (*(shards[i].accounts.begin()))->state_root[j];
+      }
+    }
   }
 
   // check post-states
   int errorFlag = 0;
   for (int i=0; i<poststates.size(); i++){
-    std::array<uint8_t,32> address;
-    for (int j=0; j<32; j++)
-      address[j] = 0;
-    *((uint32_t*)address.data())=i; // address is index for now
-    // get account form global state
-    Account* account = world_storage[address];
+    // instantiate
+    std::ifstream stream(prestates[i].wasmfilename.c_str(), std::ios::in | std::ios::binary);
+    std::vector<uint8_t> bytecode = std::vector<uint8_t>((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    // get state from world storage
+    Account* account = world_storage[poststates[i].envid];
     // compare account state against expected poststate
-    uint8_t* expected_poststate = poststates[i].data();
+    uint8_t* expected_poststate = poststates[i].stateroot.data();
     for (int j=0; j<32; j++){
+      if(verbose) printf("poststate %u idx %u  %u?=%u\n", i, j, account->state_root[j], expected_poststate[j]);
       if (account->state_root[j] != expected_poststate[j]){
         printf("error with poststate %u idx %u  %u!=%u\n", i, j, account->state_root[j], expected_poststate[j]);
 	errorFlag = 1;
       }
     }
   }
-
   if (errorFlag==0)
     printf("passed\n");
+
 
   // clean up
   for (auto acct: world_storage)
     delete world_storage[acct.first];
-    */
+
 
   return 0;
 }

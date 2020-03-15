@@ -1,4 +1,7 @@
 
+**THIS IS A BRANCH FOR PROTOTYPING CROSS-SHARD COMMUNICATIONS. THE CODE IS NOT HIGH QUALITY. BUT IT WORKS. RUN ./scout.exec hellowshards.yaml. SEE https://github.com/ewasm/scout/issues/44 and https://github.com/ewasm/scout/issues/38 FOR DISCUSSION. `helloshards.wat` uses `getShardId()` to identify which shard it is on, and if this shardid is different than the shardid passed as calldata, it copies the calldata shardid's stateroot using `getShardStateRoot(shardId, offset)` and saves it to this env's stateroot. `helloshards.yaml` swaps state roots of two envs. Still uncertain is the unspecified part mentioned in the post above, so we implement one env per shard, and at the end of each time slot, the env's stateroot is copied to the shard's stateroot.**
+
+
 The C++ file `scout.cpp` implements the [Scout spec](https://ethresear.ch/t/phase-2-execution-prototyping-engine-ewasm-scout/5509) to parse yaml test files, and to execute the Wasm tests.
 
 
